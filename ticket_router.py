@@ -2,15 +2,16 @@
 AI-Powered Support Ticket Router
 ----------------------------------
 1. Fetches mock support tickets from a public REST API (JSON)
-2. Sends each ticket to Claude for classification + routing
-3. Writes structured routing_decisions.json to output/
-4. Power Automate watches that folder and sends Teams/email alerts
+2. Classifies each ticket with Claude when a valid Anthropic API key is available
+3. Falls back to a mock rule-based classifier when no valid API key is available
+4. Writes structured routing_decisions.json to output/
+5. Power Automate watches that folder and sends Teams/email alerts
 
 Requirements:
     pip install anthropic requests
 
 Usage:
-    export ANTHROPIC_API_KEY=your_key_here
+    export ANTHROPIC_API_KEY=your_key_here   # optional
     python ticket_router.py
 """
 
@@ -20,7 +21,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
+
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -80,7 +85,37 @@ Base category on the subject matter.
 """.strip()
 
 
-def classify_ticket(client: anthropic.Anthropic, ticket: dict) -> dict:
+def mock_classify_ticket(ticket: dict) -> dict:
+    text = f"{ticket['subject']} {ticket['body']}".lower()
+
+    if any(word in text for word in ["bill", "payment", "charge", "refund"]):
+        category = "billing"
+    elif any(word in text for word in ["error", "bug", "crash", "technical", "issue"]):
+        category = "technical"
+    elif any(word in text for word in ["account", "login", "password", "username"]):
+        category = "account"
+    else:
+        category = "general"
+
+    if any(word in text for word in ["urgent", "immediately", "asap", "critical"]):
+        urgency = "high"
+    elif any(word in text for word in ["soon", "unable", "problem", "issue"]):
+        urgency = "medium"
+    else:
+        urgency = "low"
+
+    return {
+        "urgency": urgency,
+        "category": category,
+        "summary": "Mock-classified support ticket for workflow demonstration.",
+        "reasoning": "Used keyword-based fallback logic because no valid Anthropic API key was available.",
+    }
+
+
+def classify_ticket(client, ticket: dict) -> dict:
+    if client is None:
+        return mock_classify_ticket(ticket)
+
     user_message = f"Subject: {ticket['subject']}\n\n{ticket['body']}"
 
     message = client.messages.create(
@@ -118,20 +153,22 @@ def route_ticket(ticket: dict, classification: dict) -> dict:
 # ── Step 3 · Process all tickets ─────────────────────────────────────────────
 
 def process_tickets(tickets: list[dict]) -> list[dict]:
-    if not API_KEY:
-        raise EnvironmentError(
-            "ANTHROPIC_API_KEY not set. Run: export ANTHROPIC_API_KEY=your_key"
-        )
+    use_anthropic = bool(API_KEY) and anthropic is not None
 
-    client  = anthropic.Anthropic(api_key=API_KEY)
+    if use_anthropic:
+        client = anthropic.Anthropic(api_key=API_KEY)
+        print("🤖  Classifying tickets with Claude...\n")
+    else:
+        client = None
+        print("🤖  No valid Anthropic API key detected — using mock AI classifier...\n")
+
     results = []
 
-    print("🤖  Classifying tickets with Claude...\n")
     for ticket in tickets:
         print(f"   Processing ticket #{ticket['id']}: {ticket['subject'][:50]}...")
         try:
             classification = classify_ticket(client, ticket)
-            decision       = route_ticket(ticket, classification)
+            decision = route_ticket(ticket, classification)
             results.append(decision)
 
             urgency_icon = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(
@@ -141,18 +178,18 @@ def process_tickets(tickets: list[dict]) -> list[dict]:
                 f"   {urgency_icon} [{decision['urgency'].upper():6}] "
                 f"{decision['category']:10} → {decision['routed_to']}"
             )
-            time.sleep(0.3)  # Polite rate limiting
+            time.sleep(0.3)
 
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"   ⚠️  Failed to parse response for ticket #{ticket['id']}: {e}")
+        except Exception as e:
+            print(f"   ⚠️  Failed to process ticket #{ticket['id']}: {e}")
             results.append({
-                "ticket_id":    ticket["id"],
-                "subject":      ticket["subject"],
-                "urgency":      "unknown",
-                "category":     "general",
-                "summary":      "Classification failed — needs manual review.",
-                "reasoning":    str(e),
-                "routed_to":    TEAMS["general"],
+                "ticket_id": ticket["id"],
+                "subject": ticket["subject"],
+                "urgency": "unknown",
+                "category": "general",
+                "summary": "Classification failed — needs manual review.",
+                "reasoning": str(e),
+                "routed_to": TEAMS["general"],
                 "processed_at": datetime.utcnow().isoformat() + "Z",
             })
 
