@@ -14,6 +14,8 @@ This project simulates a real-world enterprise workflow where incoming support t
 4. Routed to the correct team  
 5. Triggered into an automated alert workflow (Power Automate)  
 
+The goal is to reduce manual effort, improve routing consistency, and create a scalable workflow for handling support requests.
+
 ---
 
 ## ⚙️ Tech Stack
@@ -37,6 +39,18 @@ This project simulates a real-world enterprise workflow where incoming support t
   - summary generation  
 - Output structured `routing_decisions.json`  
 - Power Automate watches output and sends alerts  
+
+---
+
+## 🛡️ Reliability & Edge Handling
+
+- Fallback routing for failed classifications  
+- Default assignment to general support when errors occur  
+- Rate limiting to avoid API overuse  
+- Structured outputs for downstream systems  
+- High-urgency tickets can be flagged for manual review (human-in-the-loop)
+
+This ensures the system remains stable, reliable, and usable in real-world environments.
 
 ---
 
